@@ -51,8 +51,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TFLITE_DCHECK(node->user_data != nullptr);
   const auto& data = *(static_cast<const OpDataConv*>(node->user_data));
 
-  // ========================================================================
-  // DATA CAPTURE BLOCK
+// ========================================================================
+  // DATA CAPTURE BLOCK (CORRECTED)
   // ========================================================================
   static int conv_bn_counter = 0;
   const int input_depth = tflite::micro::GetTensorShape(input).Dims(3);
@@ -63,18 +63,23 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const bool is_expansion = is_1x1_kernel && (output_depth > input_depth);
   const bool is_projection = is_1x1_kernel && (output_depth < input_depth);
 
+  // Check if this is the block we want to print
   if (is_expansion && conv_bn_counter == 4) {
-    printf("\n// --- BN 0: EXPANSION LAYER DATA ---\n");
-    print_tensor_as_h("bn0_ex_ifmap", input);
-    print_tensor_as_h("bn0_ex_filter", filter);
-    if (bias) print_tensor_as_h("bn0_ex_bias", bias, true);
+    printf("\n// --- BN 5: EXPANSION LAYER DATA ---\n");
+    print_tensor_as_h("bn5_ex_ifmap", input);
+    print_tensor_as_h("bn5_ex_filter", filter);
+    if (bias) print_tensor_as_h("bn5_ex_bias", bias, true);
   }
   if (is_projection && conv_bn_counter == 4) {
-    printf("\n// --- BN 0: PROJECTION LAYER DATA ---\n");
-    print_tensor_as_h("bn0_pr_ifmap", input);
-    print_tensor_as_h("bn0_pr_filter", filter);
-    if (bias) print_tensor_as_h("bn0_pr_bias", bias, true);
-    conv_bn_counter++;  // Increment counter after processing a full block
+    printf("\n// --- BN 5: PROJECTION LAYER DATA ---\n");
+    print_tensor_as_h("bn5_pr_ifmap", input);
+    print_tensor_as_h("bn5_pr_filter", filter);
+    if (bias) print_tensor_as_h("bn5_pr_bias", bias, true);
+  }
+
+  // ALWAYS increment the counter after every projection layer is found
+  if (is_projection) {
+    conv_bn_counter++;
   }
   // ========================================================================
 

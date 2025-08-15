@@ -53,17 +53,21 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           ? tflite::micro::GetEvalInput(context, node, kDepthwiseConvBiasTensor)
           : nullptr;
           
-  // ========================================================================
-  // DATA CAPTURE BLOCK
+ // ========================================================================
+  // DATA CAPTURE BLOCK (CORRECTED)
   // ========================================================================
   static int dw_bn_counter = 0;
+
+  // Check if this is the block we want to print
   if (dw_bn_counter == 4) {
-      printf("\n// --- BN 0: DEPTHWISE LAYER DATA ---\n");
-      print_tensor_as_h("bn0_dw_ifmap", input);
-      print_tensor_as_h("bn0_dw_filter", filter);
-      if (bias) print_tensor_as_h("bn0_dw_bias", bias, true);
-      dw_bn_counter++;
+      printf("\n// --- BN 5: DEPTHWISE LAYER DATA ---\n");
+      print_tensor_as_h("bn5_dw_ifmap", input);
+      print_tensor_as_h("bn5_dw_filter", filter);
+      if (bias) print_tensor_as_h("bn5_dw_bias", bias, true);
   }
+
+  // ALWAYS increment the counter after every depthwise layer
+  dw_bn_counter++;
   // ========================================================================
 
   switch (input->type) {  // Already know in/out types are same.
