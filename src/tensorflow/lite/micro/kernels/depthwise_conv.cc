@@ -57,7 +57,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   // DATA CAPTURE BLOCK
   // ========================================================================
   static int dw_bn_counter = 0;
-  if (dw_bn_counter == 0) {
+  if (dw_bn_counter == 4) {
       printf("\n// --- BN 0: DEPTHWISE LAYER DATA ---\n");
       print_tensor_as_h("bn0_dw_ifmap", input);
       print_tensor_as_h("bn0_dw_filter", filter);
