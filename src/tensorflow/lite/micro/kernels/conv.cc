@@ -51,8 +51,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TFLITE_DCHECK(node->user_data != nullptr);
   const auto& data = *(static_cast<const OpDataConv*>(node->user_data));
 
-// ========================================================================
-  // DATA CAPTURE BLOCK (CORRECTED)
+  // ========================================================================
+  // DATA CAPTURE BLOCK FOR INPUTS
   // ========================================================================
   static int conv_bn_counter = 0;
   const int input_depth = tflite::micro::GetTensorShape(input).Dims(3);
@@ -63,23 +63,17 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const bool is_expansion = is_1x1_kernel && (output_depth > input_depth);
   const bool is_projection = is_1x1_kernel && (output_depth < input_depth);
 
-  // Check if this is the block we want to print
   if (is_expansion && conv_bn_counter == 4) {
-    printf("\n// --- BN 5: EXPANSION LAYER DATA ---\n");
-    print_tensor_as_h("bn5_ex_ifmap", input);
-    print_tensor_as_h("bn5_ex_filter", filter);
-    if (bias) print_tensor_as_h("bn5_ex_bias", bias, true);
+    printf("\n// --- BN 1: EXPANSION LAYER DATA ---\n");
+    print_tensor_as_h("bn1_ex_ifmap", input);
+    print_tensor_as_h("bn1_ex_filter", filter);
+    if (bias) print_tensor_as_h("bn1_ex_bias", bias, true);
   }
   if (is_projection && conv_bn_counter == 4) {
-    printf("\n// --- BN 5: PROJECTION LAYER DATA ---\n");
-    print_tensor_as_h("bn5_pr_ifmap", input);
-    print_tensor_as_h("bn5_pr_filter", filter);
-    if (bias) print_tensor_as_h("bn5_pr_bias", bias, true);
-  }
-
-  // ALWAYS increment the counter after every projection layer is found
-  if (is_projection) {
-    conv_bn_counter++;
+    printf("\n// --- BN 1: PROJECTION LAYER DATA ---\n");
+    print_tensor_as_h("bn1_pr_ifmap", input);
+    print_tensor_as_h("bn1_pr_filter", filter);
+    if (bias) print_tensor_as_h("bn1_pr_bias", bias, true);
   }
   // ========================================================================
 
@@ -91,7 +85,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           (input->type == kTfLiteInt8 && filter->type == kTfLiteInt4),
       "Hybrid models are not supported on TFLite Micro.");
 
-  switch (input->type) {  // Already know in/out types are same.
+  switch (input->type) {
     case kTfLiteFloat32: {
       tflite::reference_ops::Conv(
           ConvParamsFloat(params, data), tflite::micro::GetTensorShape(input),
@@ -186,6 +180,21 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
                   input->type);
       return kTfLiteError;
   }
+  
+  // ========================================================================
+  // DATA CAPTURE BLOCK FOR OUTPUT (ADDED)
+  // ========================================================================
+  if (is_projection && conv_bn_counter == 4) {
+    printf("\n// --- BN 1: FINAL OUTPUT DATA ---\n");
+    print_tensor_as_h("bn1_final_output", output);
+  }
+
+  // ALWAYS increment the counter after a projection layer is found
+  if (is_projection) {
+    conv_bn_counter++;
+  }
+  // ========================================================================
+
   return kTfLiteOk;
 }
 
