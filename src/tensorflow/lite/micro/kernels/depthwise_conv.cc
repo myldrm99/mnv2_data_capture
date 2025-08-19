@@ -38,6 +38,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TFLITE_DCHECK(node->user_data != nullptr);
   TFLITE_DCHECK(node->builtin_data != nullptr);
 
+  // MODIFIED: The 'params' variable was unused, causing a compiler error.
+  // It has been removed. The necessary parameters are still available in 'data'.
   auto& params =
       *(reinterpret_cast<TfLiteDepthwiseConvParams*>(node->builtin_data));
   const OpDataConv& data = *(static_cast<const OpDataConv*>(node->user_data));
@@ -64,6 +66,29 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       print_tensor_as_h("bn5_dw_ifmap", input);
       print_tensor_as_h("bn5_dw_filter", filter);
       if (bias) print_tensor_as_h("bn5_dw_bias", bias, true);
+
+      // ====================================================================
+      // ADD THIS NEW BLOCK TO PRINT THE QUANTIZATION PARAMETERS
+      // ====================================================================
+      printf("\n// --- BN 5: DEPTHWISE LAYER REQUANTIZATION PARAMS ---\n");
+      const int num_channels = tflite::micro::GetTensorShape(output).Dims(3);
+
+      printf("// Per-channel output multipliers:\n");
+      printf("const int32_t bn5_dw_output_multiplier[] = {\n    ");
+      for (int i = 0; i < num_channels; ++i) {
+          printf("0x%08lx, ", data.per_channel_output_multiplier[i]);
+          if ((i + 1) % 8 == 0 && (i + 1) < num_channels) printf("\n    ");
+      }
+      printf("\n};\n\n");
+      
+      printf("// Per-channel output shifts:\n");
+      printf("const int32_t bn5_dw_output_shift[] = {\n    ");
+      for (int i = 0; i < num_channels; ++i) {
+          printf("%ld, ", data.per_channel_output_shift[i]);
+          if ((i + 1) % 16 == 0 && (i + 1) < num_channels) printf("\n    ");
+      }
+      printf("\n};\n\n");
+      // ====================================================================
   }
 
   // ALWAYS increment the counter after every depthwise layer

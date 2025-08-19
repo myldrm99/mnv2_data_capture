@@ -52,7 +52,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const auto& data = *(static_cast<const OpDataConv*>(node->user_data));
 
   // ========================================================================
-  // DATA CAPTURE BLOCK FOR INPUTS
+  // CORRECTED DEBUG BLOCK STARTS HERE
   // ========================================================================
   static int conv_bn_counter = 0;
   const int input_depth = tflite::micro::GetTensorShape(input).Dims(3);
@@ -63,19 +63,44 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const bool is_expansion = is_1x1_kernel && (output_depth > input_depth);
   const bool is_projection = is_1x1_kernel && (output_depth < input_depth);
 
-  if (is_expansion && conv_bn_counter == 4) {
-    printf("\n// --- BN 1: EXPANSION LAYER DATA ---\n");
-    print_tensor_as_h("bn1_ex_ifmap", input);
-    print_tensor_as_h("bn1_ex_filter", filter);
-    if (bias) print_tensor_as_h("bn1_ex_bias", bias, true);
+  static bool has_printed_debug_data = false;
+  const bool is_target_layer = is_expansion && (conv_bn_counter == 4);
+
+  if (is_target_layer && !has_printed_debug_data) {
+    printf("\n\n--- DEBUG DUMP: EXPANSION STAGE, TOP-LEFT PIXEL, CHANNEL 0 ---\n\n");
+    
+    // 1. Print Input Data (first 16 values for the top-left pixel)
+    printf("// 1. IFMAP Data (Top-Left Pixel, 1x1x16):\n");
+    printf("const int8_t debug_ifmap_pixel[] = {");
+    for (int i = 0; i < 16; ++i) {
+      printf(" %d,", tflite::micro::GetTensorData<int8_t>(input)[i]);
+    }
+    printf(" };\n\n");
+
+    // 2. Print Filter Data (first filter, 1x1x16)
+    printf("// 2. Filter Data (First Filter, Channel 0, 1x1x16):\n");
+    printf("const int8_t debug_filter_ch0[] = {");
+    for (int i = 0; i < 16; ++i) {
+      printf(" %d,", tflite::micro::GetTensorData<int8_t>(filter)[i]);
+    }
+    printf(" };\n\n");
+
+    // 3. Print Bias Data (for Channel 0)
+    if (bias) {
+      printf("// 3. Bias Data (Channel 0):\n");
+      printf("const int32_t debug_bias_ch0 = %ld; // (0x%08lx)\n\n",
+             tflite::micro::GetOptionalTensorData<int32_t>(bias)[0],
+             tflite::micro::GetOptionalTensorData<int32_t>(bias)[0]);
+    }
+
+    // 4. Print Quantization Parameters
+    printf("// 4. Quantization Parameters:\n");
+    printf("const int32_t debug_input_offset = %ld;\n", data.input_zero_point);
+    printf("const int32_t debug_output_offset = %ld;\n", data.output_zero_point);
+    printf("const int32_t debug_multiplier_ch0 = 0x%08lx;\n", data.per_channel_output_multiplier[0]);
+    printf("const int32_t debug_shift_ch0 = %ld;\n\n", data.per_channel_output_shift[0]);
   }
-  if (is_projection && conv_bn_counter == 4) {
-    printf("\n// --- BN 1: PROJECTION LAYER DATA ---\n");
-    print_tensor_as_h("bn1_pr_ifmap", input);
-    print_tensor_as_h("bn1_pr_filter", filter);
-    if (bias) print_tensor_as_h("bn1_pr_bias", bias, true);
-  }
-  // ========================================================================
+  // --- End of pre-computation debug block ---
 
   TF_LITE_ENSURE_EQ(context, input->type, output->type);
   TF_LITE_ENSURE_MSG(
@@ -181,14 +206,16 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteError;
   }
   
-  // ========================================================================
-  // DATA CAPTURE BLOCK FOR OUTPUT (ADDED)
-  // ========================================================================
-  if (is_projection && conv_bn_counter == 4) {
-    printf("\n// --- BN 1: FINAL OUTPUT DATA ---\n");
-    print_tensor_as_h("bn1_final_output", output);
+  // --- Start of post-computation debug block ---
+  if (is_target_layer && !has_printed_debug_data) {
+    // 5. Print Final Result (first channel of the first output pixel)
+    printf("// 5. Final Result (Output Pixel (0,0), Channel 0):\n");
+    printf("const int8_t debug_output_result = %d;\n\n",
+           tflite::micro::GetTensorData<int8_t>(output)[0]);
+    printf("--- END DEBUG DUMP ---\n\n");
+    has_printed_debug_data = true; // Set flag so we don't print again
   }
-
+  
   // ALWAYS increment the counter after a projection layer is found
   if (is_projection) {
     conv_bn_counter++;
