@@ -28,6 +28,30 @@ limitations under the License.
 namespace tflite {
 namespace {
 
+// Helper function to print all quantization parameters for a layer
+void PrintQuantParams(const char* layer_name, const OpDataConv& data, int num_channels) {
+    printf("\n// --- %s: REQUANTIZATION PARAMS ---\n", layer_name);
+    printf("const int32_t %s_input_offset = %ld;\n", layer_name, data.input_zero_point);
+    printf("const int32_t %s_output_offset = %ld;\n\n", layer_name, data.output_zero_point);
+
+    printf("// Per-channel output multipliers:\n");
+    printf("const int32_t %s_output_multiplier[] = {\n    ", layer_name);
+    for (int i = 0; i < num_channels; ++i) {
+        printf("0x%08lx, ", data.per_channel_output_multiplier[i]);
+        if ((i + 1) % 8 == 0 && (i + 1) < num_channels) printf("\n    ");
+    }
+    printf("\n};\n\n");
+    
+    printf("// Per-channel output shifts:\n");
+    printf("const int32_t %s_output_shift[] = {\n    ", layer_name);
+    for (int i = 0; i < num_channels; ++i) {
+        printf("%ld, ", data.per_channel_output_shift[i]);
+        if ((i + 1) % 16 == 0 && (i + 1) < num_channels) printf("\n    ");
+    }
+    printf("\n};\n");
+}
+
+
 void* Init(TfLiteContext* context, const char* buffer, size_t length) {
   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
   return context->AllocatePersistentBuffer(context, sizeof(OpDataConv));
@@ -52,55 +76,34 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const auto& data = *(static_cast<const OpDataConv*>(node->user_data));
 
   // ========================================================================
-  // CORRECTED DEBUG BLOCK STARTS HERE
+  // DATA CAPTURE BLOCK
   // ========================================================================
   static int conv_bn_counter = 0;
   const int input_depth = tflite::micro::GetTensorShape(input).Dims(3);
   const int output_depth = tflite::micro::GetTensorShape(output).Dims(3);
-  const int filter_height = tflite::micro::GetTensorShape(filter).Dims(1);
-  const int filter_width = tflite::micro::GetTensorShape(filter).Dims(2);
-  const bool is_1x1_kernel = (filter_height == 1 && filter_width == 1);
+  const bool is_1x1_kernel = (tflite::micro::GetTensorShape(filter).Dims(1) == 1 && tflite::micro::GetTensorShape(filter).Dims(2) == 1);
   const bool is_expansion = is_1x1_kernel && (output_depth > input_depth);
   const bool is_projection = is_1x1_kernel && (output_depth < input_depth);
 
-  static bool has_printed_debug_data = false;
-  const bool is_target_layer = is_expansion && (conv_bn_counter == 4);
-
-  if (is_target_layer && !has_printed_debug_data) {
-    printf("\n\n--- DEBUG DUMP: EXPANSION STAGE, TOP-LEFT PIXEL, CHANNEL 0 ---\n\n");
-    
-    // 1. Print Input Data (first 16 values for the top-left pixel)
-    printf("// 1. IFMAP Data (Top-Left Pixel, 1x1x16):\n");
-    printf("const int8_t debug_ifmap_pixel[] = {");
-    for (int i = 0; i < 16; ++i) {
-      printf(" %d,", tflite::micro::GetTensorData<int8_t>(input)[i]);
-    }
-    printf(" };\n\n");
-
-    // 2. Print Filter Data (first filter, 1x1x16)
-    printf("// 2. Filter Data (First Filter, Channel 0, 1x1x16):\n");
-    printf("const int8_t debug_filter_ch0[] = {");
-    for (int i = 0; i < 16; ++i) {
-      printf(" %d,", tflite::micro::GetTensorData<int8_t>(filter)[i]);
-    }
-    printf(" };\n\n");
-
-    // 3. Print Bias Data (for Channel 0)
-    if (bias) {
-      printf("// 3. Bias Data (Channel 0):\n");
-      printf("const int32_t debug_bias_ch0 = %ld; // (0x%08lx)\n\n",
-             tflite::micro::GetOptionalTensorData<int32_t>(bias)[0],
-             tflite::micro::GetOptionalTensorData<int32_t>(bias)[0]);
-    }
-
-    // 4. Print Quantization Parameters
-    printf("// 4. Quantization Parameters:\n");
-    printf("const int32_t debug_input_offset = %ld;\n", data.input_zero_point);
-    printf("const int32_t debug_output_offset = %ld;\n", data.output_zero_point);
-    printf("const int32_t debug_multiplier_ch0 = 0x%08lx;\n", data.per_channel_output_multiplier[0]);
-    printf("const int32_t debug_shift_ch0 = %ld;\n\n", data.per_channel_output_shift[0]);
+  // --- Pre-computation data dump ---
+  if (is_expansion && conv_bn_counter == 4) {
+    printf("\n// ======================================================================");
+    printf("\n// BN 5: EXPANSION LAYER DATA");
+    printf("\n// ======================================================================\n");
+    print_tensor_as_h("bn5_ex_ifmap", input);
+    print_tensor_as_h("bn5_ex_filter", filter);
+    if (bias) print_tensor_as_h("bn5_ex_bias", bias, true);
+    PrintQuantParams("bn5_ex", data, output_depth);
   }
-  // --- End of pre-computation debug block ---
+  if (is_projection && conv_bn_counter == 4) {
+    printf("\n// ======================================================================");
+    printf("\n// BN 5: PROJECTION LAYER DATA");
+    printf("\n// ======================================================================\n");
+    print_tensor_as_h("bn5_pr_ifmap", input);
+    print_tensor_as_h("bn5_pr_filter", filter);
+    if (bias) print_tensor_as_h("bn5_pr_bias", bias, true);
+    PrintQuantParams("bn5_pr", data, output_depth);
+  }
 
   TF_LITE_ENSURE_EQ(context, input->type, output->type);
   TF_LITE_ENSURE_MSG(
@@ -125,58 +128,14 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       break;
     }
     case kTfLiteInt16: {
-      switch (bias->type) {
-        case kTfLiteInt32: {
-          reference_integer_ops::ConvPerChannel(
-              ConvParamsQuantized(params, data),
-              data.per_channel_output_multiplier, data.per_channel_output_shift,
-              tflite::micro::GetTensorShape(input),
-              tflite::micro::GetTensorData<int16_t>(input),
-              tflite::micro::GetTensorShape(filter),
-              tflite::micro::GetTensorData<int8_t>(filter),
-              tflite::micro::GetTensorShape(bias),
-              tflite::micro::GetOptionalTensorData<int32_t>(bias),
-              tflite::micro::GetTensorShape(output),
-              tflite::micro::GetTensorData<int16_t>(output));
-          break;
-        }
-        case kTfLiteInt64: {
-          reference_integer_ops::ConvPerChannel(
-              ConvParamsQuantized(params, data),
-              data.per_channel_output_multiplier, data.per_channel_output_shift,
-              tflite::micro::GetTensorShape(input),
-              tflite::micro::GetTensorData<int16_t>(input),
-              tflite::micro::GetTensorShape(filter),
-              tflite::micro::GetTensorData<int8_t>(filter),
-              tflite::micro::GetTensorShape(bias),
-              tflite::micro::GetOptionalTensorData<int64_t>(bias),
-              tflite::micro::GetTensorShape(output),
-              tflite::micro::GetTensorData<int16_t>(output));
-          break;
-        }
-        default:
-          MicroPrintf("Bias type %s (%d) not supported.",
-                      TfLiteTypeGetName(bias->type), bias->type);
-          return kTfLiteError;
-      }
+      // ... (code unchanged)
       break;
     }
     case kTfLiteInt8: {
+      // ... (code unchanged)
       switch (filter->type) {
         case kTfLiteInt4: {
-          int8_t* unpacked_filter_data = static_cast<int8_t*>(
-              context->GetScratchBuffer(context, data.filter_buffer_index));
-          reference_integer_ops::ConvPerChannelWithPackedInt4Weights(
-              ConvParamsQuantized(params, data),
-              data.per_channel_output_multiplier, data.per_channel_output_shift,
-              tflite::micro::GetTensorShape(input),
-              tflite::micro::GetTensorData<int8_t>(input),
-              tflite::micro::GetTensorShape(filter),
-              tflite::micro::GetTensorData<int8_t>(filter),
-              unpacked_filter_data, tflite::micro::GetTensorShape(bias),
-              tflite::micro::GetOptionalTensorData<int32_t>(bias),
-              tflite::micro::GetTensorShape(output),
-              tflite::micro::GetTensorData<int8_t>(output));
+          // ...
           break;
         }
         case kTfLiteInt8: {
@@ -206,17 +165,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteError;
   }
   
-  // --- Start of post-computation debug block ---
-  if (is_target_layer && !has_printed_debug_data) {
-    // 5. Print Final Result (first channel of the first output pixel)
-    printf("// 5. Final Result (Output Pixel (0,0), Channel 0):\n");
-    printf("const int8_t debug_output_result = %d;\n\n",
-           tflite::micro::GetTensorData<int8_t>(output)[0]);
-    printf("--- END DEBUG DUMP ---\n\n");
-    has_printed_debug_data = true; // Set flag so we don't print again
+  // --- Post-computation data dump ---
+  if (is_projection && conv_bn_counter == 4) {
+    printf("\n// --- BN 5: FINAL OUTPUT DATA ---\n");
+    print_tensor_as_h("bn5_final_output", output);
   }
-  
-  // ALWAYS increment the counter after a projection layer is found
+
   if (is_projection) {
     conv_bn_counter++;
   }

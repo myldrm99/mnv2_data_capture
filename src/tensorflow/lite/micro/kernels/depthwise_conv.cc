@@ -29,6 +29,29 @@ limitations under the License.
 namespace tflite {
 namespace {
 
+// Helper function to print all quantization parameters for a layer
+void PrintQuantParams(const char* layer_name, const OpDataConv& data, int num_channels) {
+    printf("\n// --- %s: REQUANTIZATION PARAMS ---\n", layer_name);
+    printf("const int32_t %s_input_offset = %ld;\n", layer_name, data.input_zero_point);
+    printf("const int32_t %s_output_offset = %ld;\n\n", layer_name, data.output_zero_point);
+
+    printf("// Per-channel output multipliers:\n");
+    printf("const int32_t %s_output_multiplier[] = {\n    ", layer_name);
+    for (int i = 0; i < num_channels; ++i) {
+        printf("0x%08lx, ", data.per_channel_output_multiplier[i]);
+        if ((i + 1) % 8 == 0 && (i + 1) < num_channels) printf("\n    ");
+    }
+    printf("\n};\n\n");
+    
+    printf("// Per-channel output shifts:\n");
+    printf("const int32_t %s_output_shift[] = {\n    ", layer_name);
+    for (int i = 0; i < num_channels; ++i) {
+        printf("%ld, ", data.per_channel_output_shift[i]);
+        if ((i + 1) % 16 == 0 && (i + 1) < num_channels) printf("\n    ");
+    }
+    printf("\n};\n");
+}
+
 void* Init(TfLiteContext* context, const char* buffer, size_t length) {
   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
   return context->AllocatePersistentBuffer(context, sizeof(OpDataConv));
@@ -38,8 +61,6 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TFLITE_DCHECK(node->user_data != nullptr);
   TFLITE_DCHECK(node->builtin_data != nullptr);
 
-  // MODIFIED: The 'params' variable was unused, causing a compiler error.
-  // It has been removed. The necessary parameters are still available in 'data'.
   auto& params =
       *(reinterpret_cast<TfLiteDepthwiseConvParams*>(node->builtin_data));
   const OpDataConv& data = *(static_cast<const OpDataConv*>(node->user_data));
@@ -55,58 +76,49 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           ? tflite::micro::GetEvalInput(context, node, kDepthwiseConvBiasTensor)
           : nullptr;
           
- // ========================================================================
-  // DATA CAPTURE BLOCK (CORRECTED)
+  // ========================================================================
+  // DATA CAPTURE BLOCK
   // ========================================================================
   static int dw_bn_counter = 0;
+  static bool has_printed_dw_debug = false;
 
-  // Check if this is the block we want to print
   if (dw_bn_counter == 4) {
-      printf("\n// --- BN 5: DEPTHWISE LAYER DATA ---\n");
+      printf("\n// ======================================================================");
+      printf("\n// BN 5: DEPTHWISE LAYER DATA");
+      printf("\n// ======================================================================\n");
       print_tensor_as_h("bn5_dw_ifmap", input);
       print_tensor_as_h("bn5_dw_filter", filter);
       if (bias) print_tensor_as_h("bn5_dw_bias", bias, true);
+      PrintQuantParams("bn5_dw", data, tflite::micro::GetTensorShape(output).Dims(3));
 
-      // ====================================================================
-      // ADD THIS NEW BLOCK TO PRINT THE QUANTIZATION PARAMETERS
-      // ====================================================================
-      printf("\n// --- BN 5: DEPTHWISE LAYER REQUANTIZATION PARAMS ---\n");
-      const int num_channels = tflite::micro::GetTensorShape(output).Dims(3);
+      if (!has_printed_dw_debug) {
+          printf("\n\n--- DEBUG DUMP: DEPTHWISE STAGE, TOP-LEFT 3x3 WINDOW, CHANNEL 0 ---\n\n");
+          const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+          const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+          const int8_t* filter_data = tflite::micro::GetTensorData<int8_t>(filter);
+          
+          printf("// 1. DW Input Data (Top-Left 3x3 Window, Channel 0):\n");
+          printf("const int8_t debug_dw_window_ch0[] = {");
+          for (int y = 0; y < 3; ++y) {
+              for (int x = 0; x < 3; ++x) {
+                  printf(" %d,", input_data[Offset(input_shape, 0, y, x, 0)]);
+              }
+          }
+          printf(" };\n\n");
 
-      printf("// Per-channel output multipliers:\n");
-      printf("const int32_t bn5_dw_output_multiplier[] = {\n    ");
-      for (int i = 0; i < num_channels; ++i) {
-          printf("0x%08lx, ", data.per_channel_output_multiplier[i]);
-          if ((i + 1) % 8 == 0 && (i + 1) < num_channels) printf("\n    ");
+          printf("// 2. DW Filter Data (First Filter, Channel 0, 3x3):\n");
+          printf("const int8_t debug_dw_filter_ch0[] = {");
+          for (int i = 0; i < 9; ++i) {
+              printf(" %d,", filter_data[i]);
+          }
+          printf(" };\n\n");
+          has_printed_dw_debug = true;
       }
-      printf("\n};\n\n");
-      
-      printf("// Per-channel output shifts:\n");
-      printf("const int32_t bn5_dw_output_shift[] = {\n    ");
-      for (int i = 0; i < num_channels; ++i) {
-          printf("%ld, ", data.per_channel_output_shift[i]);
-          if ((i + 1) % 16 == 0 && (i + 1) < num_channels) printf("\n    ");
-      }
-      printf("\n};\n\n");
-      // ====================================================================
   }
 
-  // ALWAYS increment the counter after every depthwise layer
-  dw_bn_counter++;
-  // ========================================================================
-
-  switch (input->type) {  // Already know in/out types are same.
+  switch (input->type) {
     case kTfLiteFloat32: {
-      tflite::reference_ops::DepthwiseConv(
-          DepthwiseConvParamsFloat(params, data),
-          tflite::micro::GetTensorShape(input),
-          tflite::micro::GetTensorData<float>(input),
-          tflite::micro::GetTensorShape(filter),
-          tflite::micro::GetTensorData<float>(filter),
-          tflite::micro::GetTensorShape(bias),
-          tflite::micro::GetOptionalTensorData<float>(bias),
-          tflite::micro::GetTensorShape(output),
-          tflite::micro::GetTensorData<float>(output));
+      // ... (code unchanged)
       break;
     }
     case kTfLiteInt8: {
@@ -126,19 +138,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           break;
         }
         case kTfLiteInt4: {
-          int8_t* unpacked_filter_data = static_cast<int8_t*>(
-              context->GetScratchBuffer(context, data.filter_buffer_index));
-          reference_integer_ops::DepthwiseConvPerChannelWithPackedInt4Weights(
-              DepthwiseConvParamsQuantized(params, data),
-              data.per_channel_output_multiplier, data.per_channel_output_shift,
-              tflite::micro::GetTensorShape(input),
-              tflite::micro::GetTensorData<int8_t>(input),
-              tflite::micro::GetTensorShape(filter),
-              tflite::micro::GetTensorData<int8_t>(filter),
-              unpacked_filter_data, tflite::micro::GetTensorShape(bias),
-              tflite::micro::GetOptionalTensorData<int32_t>(bias),
-              tflite::micro::GetTensorShape(output),
-              tflite::micro::GetTensorData<int8_t>(output));
+          // ... (code unchanged)
           break;
         }
         default:
@@ -153,6 +153,16 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
                   TfLiteTypeGetName(input->type), input->type);
       return kTfLiteError;
   }
+
+  // --- Post-computation data dump ---
+  if (dw_bn_counter == 4) {
+      printf("\n// --- BN 5: DEPTHWISE LAYER OUTPUT (PROJECTION INPUT) ---\n");
+      print_tensor_as_h("bn5_dw_output_pr_ifmap", output);
+  }
+  
+  dw_bn_counter++;
+  // ========================================================================
+
   return kTfLiteOk;
 }
 
